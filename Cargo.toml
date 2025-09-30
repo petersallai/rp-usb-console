@@ -20,6 +20,11 @@ exclude = [
     "*.swo"
 ]
 
+[lib]
+test = false
+doctest = false
+bench = false
+
 [package.metadata.docs.rs]
 all-features = true
 targets = ["thumbv6m-none-eabi"]
