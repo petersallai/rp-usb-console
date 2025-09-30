@@ -1,7 +1,7 @@
 [package]
 name = "rp-usb-console"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 authors = ["Bad Access Kft."]
 license = "MIT"
 description = "Zero-heap USB CDC logging and command channel for RP2040 with Embassy async framework"
