@@ -1,0 +1,33 @@
+[package]
+name = "rp-usb-console"
+version = "0.1.0"
+edition = "2024"
+authors = ["Bad Access Kft."]
+license = "MIT"
+description = "Zero-heap USB CDC logging and command channel for RP2040 with Embassy async framework"
+repository = "https://github.com/moonblokz/rp-usb-console"
+homepage = "https://github.com/moonblokz/rp-usb-console"
+documentation = "https://docs.rs/rp-usb-console"
+readme = "README.md"
+keywords = ["rp2040", "usb", "logging", "embassy", "embedded"]
+categories = ["embedded", "hardware-support", "development-tools::debugging"]
+rust-version = "1.75"
+exclude = [
+    ".DS_Store",
+    ".vscode/",
+    ".idea/",
+    "*.swp",
+    "*.swo"
+]
+
+[package.metadata.docs.rs]
+all-features = true
+targets = ["thumbv6m-none-eabi"]
+
+[dependencies]
+
+embassy-sync = { version = "0.7"}
+embassy-executor = { version = "0.9", features = []}
+embassy-rp = { version = "0.8",features = ["unstable-pac", "time-driver", "critical-section-impl", "rp2040"]}
+embassy-usb = { version = "0.5.0" }
+log = "0.4"
