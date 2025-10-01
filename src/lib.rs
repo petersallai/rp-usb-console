@@ -16,8 +16,9 @@
 //! use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 //! use log::info;
 //!
+//!
 //! // Create a channel for receiving commands from USB
-//! static COMMAND_CHANNEL: Channel<CriticalSectionRawMutex, [u8; 64], 4> = Channel::new();
+//! static COMMAND_CHANNEL: Channel<CriticalSectionRawMutex, [u8; USB_READ_BUFFER_SIZE], 4> = Channel::new();
 //!
 //! #[embassy_executor::main]
 //! async fn main(spawner: Spawner) {
@@ -66,8 +67,10 @@
 //! - **Reliability**: Fragmented transmission reduces host-side latency issues
 //! - **Safety**: Single-core assumptions with proper synchronization primitives
 
-use core::cell::UnsafeCell;
+use core::cell::{RefCell, UnsafeCell};
+use core::cmp::min;
 use core::fmt::{Result as FmtResult, Write};
+use critical_section::Mutex as CsMutex;
 use embassy_executor::Spawner;
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Driver, InterruptHandler};
@@ -76,7 +79,8 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Channel, Sender};
 use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver, Sender as UsbSender, State};
 use embassy_usb::{Builder, UsbDevice};
-use log::{LevelFilter, Log, Metadata, Record};
+use log::{Level, LevelFilter, Log, Metadata, Record};
+use rp2040_hal::rom_data::reset_to_usb_boot;
 
 bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => InterruptHandler<USB>;
@@ -84,6 +88,37 @@ bind_interrupts!(struct Irqs {
 
 /// Size of each USB packet fragment.
 const PACKET_SIZE: usize = 64;
+const MODULE_FILTER_CAPACITY: usize = 255;
+/// Size (in bytes) of the receive buffer used to accumulate incoming USB command data before processing.
+pub const USB_READ_BUFFER_SIZE: usize = 255;
+
+#[derive(Copy, Clone)]
+struct LogModuleSettings {
+    module_filter: [u8; MODULE_FILTER_CAPACITY],
+    module_filter_len: usize,
+    module_level: LevelFilter,
+    other_level: LevelFilter,
+}
+
+impl LogModuleSettings {
+    fn new(module_name: &str, module_level: LevelFilter, other_level: LevelFilter) -> Self {
+        let mut buf = [0u8; MODULE_FILTER_CAPACITY];
+        let bytes = module_name.as_bytes();
+        let len = min(bytes.len(), MODULE_FILTER_CAPACITY);
+        buf[..len].copy_from_slice(&bytes[..len]);
+
+        Self {
+            module_filter: buf,
+            module_filter_len: len,
+            module_level,
+            other_level,
+        }
+    }
+
+    fn module_name(&self) -> &str {
+        core::str::from_utf8(&self.module_filter[..self.module_filter_len]).unwrap_or("")
+    }
+}
 
 /// Fixed-size (255 byte) log/command message buffer with USB packet fragmentation support.
 ///
@@ -151,6 +186,32 @@ impl Write for LogMessage {
 type LogChannel = Channel<CriticalSectionRawMutex, LogMessage, 4>;
 static LOG_CHANNEL: LogChannel = Channel::new();
 
+static LOG_SETTINGS: CsMutex<RefCell<Option<LogModuleSettings>>> = CsMutex::new(RefCell::new(None));
+
+fn parse_level_filter(token: &str) -> Option<LevelFilter> {
+    let mut chars = token.chars();
+    let ch = chars.next()?.to_ascii_uppercase();
+    if chars.next().is_some() {
+        return None;
+    }
+    match ch {
+        'T' => Some(LevelFilter::Trace),
+        'D' => Some(LevelFilter::Debug),
+        'I' => Some(LevelFilter::Info),
+        'W' => Some(LevelFilter::Warn),
+        'E' => Some(LevelFilter::Error),
+        'O' => Some(LevelFilter::Off),
+        _ => None,
+    }
+}
+
+fn level_allowed(filter: LevelFilter, level: Level) -> bool {
+    match filter.to_level() {
+        Some(max) => level <= max,
+        None => false,
+    }
+}
+
 /// Internal logger implementation that forwards formatted lines to the USB channel.
 ///
 /// This logger formats log records and sends them through the internal channel
@@ -165,6 +226,26 @@ impl Log for USBLogger {
 
     fn log(&self, record: &Record) {
         if self.enabled(record.metadata()) {
+            let should_emit = critical_section::with(|cs| {
+                let guard = LOG_SETTINGS.borrow(cs);
+                let settings_ref = guard.borrow();
+                match &*settings_ref {
+                    Some(settings) => {
+                        let module_name = settings.module_name();
+                        let target_filter = match record.module_path() {
+                            Some(path) if !module_name.is_empty() && path.contains(module_name) => settings.module_level,
+                            _ => settings.other_level,
+                        };
+                        level_allowed(target_filter, record.level())
+                    }
+                    None => true,
+                }
+            });
+
+            if !should_emit {
+                return;
+            }
+
             let mut message = LogMessage::new();
             let path = if let Some(p) = record.module_path() { p } else { "" };
             if write!(&mut message, "[{}] {}: {}\r\n", record.level(), path, record.args()).is_ok() {
@@ -186,14 +267,158 @@ static LOGGER: USBLogger = USBLogger;
 ///
 /// The task automatically handles USB disconnection/reconnection cycles.
 #[embassy_executor::task]
-async fn usb_rx_task(mut receiver: Receiver<'static, Driver<'static, USB>>, command_sender: Sender<'static, CriticalSectionRawMutex, [u8; 64], 4>) {
+async fn usb_rx_task(
+    mut receiver: Receiver<'static, Driver<'static, USB>>,
+    command_sender: Option<Sender<'static, CriticalSectionRawMutex, [u8; USB_READ_BUFFER_SIZE], 4>>,
+) {
+    let mut buf = [0u8; USB_READ_BUFFER_SIZE];
+    let mut buf_position: usize = 0;
     loop {
         receiver.wait_connection().await;
-        let mut buf = [0u8; 64];
+        let mut read_buf = [0u8; USB_READ_BUFFER_SIZE];
         loop {
-            match receiver.read_packet(&mut buf).await {
-                Ok(_) => {
-                    command_sender.send(buf).await;
+            match receiver.read_packet(&mut read_buf).await {
+                Ok(len) => {
+                    if len + buf_position > USB_READ_BUFFER_SIZE {
+                        buf_position = 0;
+                    }
+                    buf[buf_position..buf_position + len].copy_from_slice(&read_buf[..len]);
+                    buf_position += len;
+
+                    if !(buf.contains(&b'\n') || buf.contains(&b'\r')) {
+                        continue; // Wait for more data
+                    }
+
+                    let mut processed = false;
+                    if let Ok(command_str) = core::str::from_utf8(&buf[0..3]) {
+                        match command_str {
+                            "/BS" => {
+                                reset_to_usb_boot(0, 0);
+                            }
+                            "/RS" => {
+                                rp2040_hal::reset();
+                            }
+                            "/LT" => {
+                                processed = true;
+                                unsafe {
+                                    log::set_max_level_racy(LevelFilter::Trace);
+                                }
+                                log::info!("Log level set to Trace");
+                            }
+                            "/LD" => {
+                                processed = true;
+                                unsafe {
+                                    log::set_max_level_racy(LevelFilter::Debug);
+                                }
+                                log::info!("Log level set to Debug");
+                            }
+                            "/LI" => {
+                                processed = true;
+                                unsafe {
+                                    log::set_max_level_racy(LevelFilter::Info);
+                                }
+                                log::info!("Log level set to Info");
+                            }
+                            "/LW" => {
+                                processed = true;
+                                unsafe {
+                                    log::set_max_level_racy(LevelFilter::Warn);
+                                }
+                                log::warn!("Log level set to Warn");
+                            }
+                            "/LE" => {
+                                processed = true;
+                                unsafe {
+                                    log::set_max_level_racy(LevelFilter::Error);
+                                }
+                                log::error!("Log level set to Error");
+                            }
+                            "/LO" => {
+                                processed = true;
+                                unsafe {
+                                    log::set_max_level_racy(LevelFilter::Off);
+                                }
+                                // Cannot log here since logging is now off
+                            }
+                            "/LM" => {
+                                processed = true;
+                                if let Ok(param_string) = core::str::from_utf8(&buf[4..]) {
+                                    let param_string = param_string.trim_matches(char::from(0)).trim();
+
+                                    let mut parts = param_string.splitn(2, ',');
+                                    match (parts.next(), parts.next()) {
+                                        (Some(module_filter), Some(module_log_level)) => {
+                                            let module_filter = module_filter.trim();
+                                            let module_level_str = module_log_level.trim();
+
+                                            if module_filter.is_empty() {
+                                                log::error!("Invalid /LM parameters '{}'. Module name cannot be empty", param_string);
+                                                buf_position = 0; // Reset buffer for next command
+                                                buf = [0u8; USB_READ_BUFFER_SIZE];
+                                                continue;
+                                            }
+
+                                            if module_level_str == "-" {
+                                                log::info!("Module logging override cleared for '{}'", module_filter);
+                                                critical_section::with(|cs| {
+                                                    if let Some(x) = *LOG_SETTINGS.borrow(cs).borrow() {
+                                                        unsafe {
+                                                            log::set_max_level_racy(x.other_level);
+                                                        }
+                                                    }
+                                                    *LOG_SETTINGS.borrow(cs).borrow_mut() = None;
+                                                });
+                                                buf_position = 0; // Reset buffer for next command
+                                                buf = [0u8; USB_READ_BUFFER_SIZE];
+                                                continue;
+                                            }
+
+                                            let Some(module_level) = parse_level_filter(module_level_str) else {
+                                                log::error!("Invalid /LM module level '{}'. Use one of T,D,I,W,E,O", module_level_str);
+                                                buf_position = 0; // Reset buffer for next command
+                                                buf = [0u8; USB_READ_BUFFER_SIZE];
+                                                continue;
+                                            };
+                                            let other_level = log::max_level();
+
+                                            unsafe {
+                                                log::set_max_level_racy(module_level);
+                                            }
+
+                                            let settings = LogModuleSettings::new(module_filter, module_level, other_level);
+
+                                            critical_section::with(|cs| {
+                                                *LOG_SETTINGS.borrow(cs).borrow_mut() = Some(settings);
+                                            });
+
+                                            log::info!("Module logging override: module='{}' module_level={:?}", module_filter, module_level);
+                                        }
+                                        _ => {
+                                            log::error!(
+                                                "Invalid /LM parameters '{}'. Expected format: /LM <module_filter>,<module_log_level[T|D|I|W|E]>",
+                                                param_string
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+
+                            _ => {}
+                        }
+                    }
+                    if !processed && buf_position > 1 {
+                        if let Some(sender) = &command_sender {
+                            // Null-terminate the command string
+                            if buf_position < USB_READ_BUFFER_SIZE {
+                                buf[buf_position] = 0;
+                            } else {
+                                buf[USB_READ_BUFFER_SIZE - 1] = 0;
+                            }
+                            let _ = sender.send(buf).await;
+                        }
+                    }
+                    buf_position = 0; // Reset buffer for next command
+                    buf = [0u8; USB_READ_BUFFER_SIZE];
                 }
                 Err(_) => break,
             }
@@ -279,7 +504,12 @@ async fn usb_device_task(mut usb: UsbDevice<'static, Driver<'static, USB>>) {
 /// );
 /// # }
 /// ```
-pub fn start(spawner: Spawner, level: LevelFilter, usb_peripheral: Peri<'static, USB>, command_sender: Sender<'static, CriticalSectionRawMutex, [u8; 64], 4>) {
+pub fn start(
+    spawner: Spawner,
+    level: LevelFilter,
+    usb_peripheral: Peri<'static, USB>,
+    command_sender: Option<Sender<'static, CriticalSectionRawMutex, [u8; USB_READ_BUFFER_SIZE], 4>>,
+) {
     // Initialize the logger (use racy variants on targets without atomic ptr support, e.g. thumbv6m/RP2040)
     unsafe {
         log::set_logger_racy(&LOGGER).unwrap();
