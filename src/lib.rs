@@ -6,7 +6,8 @@
 //!
 //! This crate provides a zero-heap solution for bidirectional USB communication
 //! on RP2040 microcontrollers using the Embassy async framework. It enables both
-//! logging output and command input over a standard USB CDC ACM interface.
+//! logging output and line-buffered command input (terminated by `\r`, `\n`, or
+//! `\r\n`) over a standard USB CDC ACM interface.
 //!
 //! # Quick Start
 //!
@@ -15,9 +16,9 @@
 //! use embassy_sync::channel::Channel;
 //! use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 //! use log::info;
+//! use rp_usb_console::USB_READ_BUFFER_SIZE;
 //!
-//!
-//! // Create a channel for receiving commands from USB
+//! // Create a channel for receiving line-buffered commands from USB
 //! static COMMAND_CHANNEL: Channel<CriticalSectionRawMutex, [u8; USB_READ_BUFFER_SIZE], 4> = Channel::new();
 //!
 //! #[embassy_executor::main]
@@ -29,7 +30,7 @@
 //!         spawner,
 //!         log::LevelFilter::Info,
 //!         p.USB,
-//!         COMMAND_CHANNEL.sender()
+//!         Some(COMMAND_CHANNEL.sender()),
 //!     );
 //!     
 //!     // Now you can use standard log macros
@@ -44,7 +45,7 @@
 //!     let receiver = COMMAND_CHANNEL.receiver();
 //!     loop {
 //!         let command = receiver.receive().await;
-//!         // Process received command data
+//!         // Process received command data (trailing zeros may be present)
 //!         info!("Received command: {:?}", command);
 //!     }
 //! }
@@ -56,7 +57,8 @@
 //! - **Non-blocking logging**: Messages are dropped rather than blocking when channels are full
 //! - **USB CDC ACM**: Standard USB serial interface compatible with most terminal programs
 //! - **Packet fragmentation**: Large messages are automatically split for reliable transmission
-//! - **Bidirectional**: Both log output and command input over the same USB connection
+//! - **Bidirectional**: Both log output and line-buffered command input over the same USB connection
+//! - **Configurable command sink**: Forward parsed commands to your own channel or disable command forwarding entirely
 //! - **Embassy integration**: Designed for Embassy's async executor on RP2040
 //!
 //! # Design Principles
@@ -90,6 +92,9 @@ bind_interrupts!(struct Irqs {
 const PACKET_SIZE: usize = 64;
 const MODULE_FILTER_CAPACITY: usize = 255;
 /// Size (in bytes) of the receive buffer used to accumulate incoming USB command data before processing.
+///
+/// Applications that forward commands should allocate their channels using this
+/// buffer size to avoid truncation.
 pub const USB_READ_BUFFER_SIZE: usize = 255;
 
 #[derive(Copy, Clone)]
@@ -262,8 +267,11 @@ static LOGGER: USBLogger = USBLogger;
 /// USB receive task that handles incoming data from the host.
 ///
 /// This task waits for USB connection, then continuously reads incoming packets
-/// and forwards them to the provided command channel. Each received packet is
-/// exactly 64 bytes and represents raw USB data from the host.
+/// and accumulates them into a single buffer until a line terminator (`\r`,
+/// `\n`, or `\r\n`) is received. Completed lines are dispatched to the optional
+/// command channel for application handling, while built-in control commands
+/// (such as `/BS` and `/LM`) are processed internally. If `command_sender` is
+/// `None`, application commands are ignored after internal processing.
 ///
 /// The task automatically handles USB disconnection/reconnection cycles.
 #[embassy_executor::task]
@@ -478,7 +486,7 @@ async fn usb_device_task(mut usb: UsbDevice<'static, Driver<'static, USB>>) {
 /// * `spawner` - Embassy task spawner for creating the USB tasks
 /// * `level` - Maximum log level to transmit (e.g., `LevelFilter::Info`)
 /// * `usb_peripheral` - RP2040 USB peripheral instance
-/// * `command_sender` - Channel sender for receiving commands from the host
+/// * `command_sender` - Optional channel sender for receiving line-buffered commands from the host (`None` disables forwarding)
 ///
 /// # Panics
 ///
@@ -493,14 +501,14 @@ async fn usb_device_task(mut usb: UsbDevice<'static, Driver<'static, USB>>) {
 /// use log::LevelFilter;
 /// # use rp_usb_console;
 ///
-/// static COMMAND_CHANNEL: Channel<CriticalSectionRawMutex, [u8; 64], 4> = Channel::new();
+/// static COMMAND_CHANNEL: Channel<CriticalSectionRawMutex, [u8; rp_usb_console::USB_READ_BUFFER_SIZE], 4> = Channel::new();
 ///
 /// # async fn example(spawner: Spawner, usb_peripheral: embassy_rp::peripherals::USB) {
 /// rp_usb_console::start(
 ///     spawner,
 ///     LevelFilter::Info,
 ///     usb_peripheral,
-///     COMMAND_CHANNEL.sender()
+///     Some(COMMAND_CHANNEL.sender()),
 /// );
 /// # }
 /// ```
