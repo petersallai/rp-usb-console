@@ -311,6 +311,11 @@ async fn usb_rx_task(
                                 unsafe {
                                     log::set_max_level_racy(LevelFilter::Trace);
                                 }
+                                critical_section::with(|cs| {
+                                    if let Some(ref mut settings) = *LOG_SETTINGS.borrow(cs).borrow_mut() {
+                                        settings.other_level = LevelFilter::Trace;
+                                    }
+                                });
                                 log::info!("Log level set to Trace");
                             }
                             "/LD" => {
@@ -318,6 +323,11 @@ async fn usb_rx_task(
                                 unsafe {
                                     log::set_max_level_racy(LevelFilter::Debug);
                                 }
+                                critical_section::with(|cs| {
+                                    if let Some(ref mut settings) = *LOG_SETTINGS.borrow(cs).borrow_mut() {
+                                        settings.other_level = LevelFilter::Debug;
+                                    }
+                                });
                                 log::info!("Log level set to Debug");
                             }
                             "/LI" => {
@@ -325,6 +335,11 @@ async fn usb_rx_task(
                                 unsafe {
                                     log::set_max_level_racy(LevelFilter::Info);
                                 }
+                                critical_section::with(|cs| {
+                                    if let Some(ref mut settings) = *LOG_SETTINGS.borrow(cs).borrow_mut() {
+                                        settings.other_level = LevelFilter::Info;
+                                    }
+                                });
                                 log::info!("Log level set to Info");
                             }
                             "/LW" => {
@@ -332,6 +347,11 @@ async fn usb_rx_task(
                                 unsafe {
                                     log::set_max_level_racy(LevelFilter::Warn);
                                 }
+                                critical_section::with(|cs| {
+                                    if let Some(ref mut settings) = *LOG_SETTINGS.borrow(cs).borrow_mut() {
+                                        settings.other_level = LevelFilter::Warn;
+                                    }
+                                });
                                 log::warn!("Log level set to Warn");
                             }
                             "/LE" => {
@@ -339,6 +359,11 @@ async fn usb_rx_task(
                                 unsafe {
                                     log::set_max_level_racy(LevelFilter::Error);
                                 }
+                                critical_section::with(|cs| {
+                                    if let Some(ref mut settings) = *LOG_SETTINGS.borrow(cs).borrow_mut() {
+                                        settings.other_level = LevelFilter::Error;
+                                    }
+                                });
                                 log::error!("Log level set to Error");
                             }
                             "/LO" => {
@@ -346,6 +371,11 @@ async fn usb_rx_task(
                                 unsafe {
                                     log::set_max_level_racy(LevelFilter::Off);
                                 }
+                                critical_section::with(|cs| {
+                                    if let Some(ref mut settings) = *LOG_SETTINGS.borrow(cs).borrow_mut() {
+                                        settings.other_level = LevelFilter::Off;
+                                    }
+                                });
                                 // Cannot log here since logging is now off
                             }
                             "/LM" => {
