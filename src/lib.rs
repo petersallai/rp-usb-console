@@ -191,7 +191,23 @@ impl Write for LogMessage {
 type LogChannel = Channel<CriticalSectionRawMutex, LogMessage, 4>;
 static LOG_CHANNEL: LogChannel = Channel::new();
 
+// Log settings protected by critical section for dual-core safety.
+// RP2040's critical sections use hardware spinlocks to synchronize between cores.
 static LOG_SETTINGS: CsMutex<RefCell<Option<LogModuleSettings>>> = CsMutex::new(RefCell::new(None));
+
+/// Read current log settings (inside critical section).
+#[inline]
+fn get_log_settings() -> Option<LogModuleSettings> {
+    critical_section::with(|cs| *LOG_SETTINGS.borrow(cs).borrow())
+}
+
+/// Update log settings (inside critical section).
+#[inline]
+fn set_log_settings(settings: Option<LogModuleSettings>) {
+    critical_section::with(|cs| {
+        *LOG_SETTINGS.borrow(cs).borrow_mut() = settings;
+    });
+}
 
 fn parse_level_filter(token: &str) -> Option<LevelFilter> {
     let mut chars = token.chars();
@@ -231,21 +247,17 @@ impl Log for USBLogger {
 
     fn log(&self, record: &Record) {
         if self.enabled(record.metadata()) {
-            let should_emit = critical_section::with(|cs| {
-                let guard = LOG_SETTINGS.borrow(cs);
-                let settings_ref = guard.borrow();
-                match &*settings_ref {
-                    Some(settings) => {
-                        let module_name = settings.module_name();
-                        let target_filter = match record.module_path() {
-                            Some(path) if !module_name.is_empty() && path.contains(module_name) => settings.module_level,
-                            _ => settings.other_level,
-                        };
-                        level_allowed(target_filter, record.level())
-                    }
-                    None => true,
+            let should_emit = match get_log_settings() {
+                Some(settings) => {
+                    let module_name = settings.module_name();
+                    let target_filter = match record.module_path() {
+                        Some(path) if !module_name.is_empty() && path.contains(module_name) => settings.module_level,
+                        _ => settings.other_level,
+                    };
+                    level_allowed(target_filter, record.level())
                 }
-            });
+                None => true,
+            };
 
             if !should_emit {
                 return;
@@ -368,14 +380,12 @@ async fn usb_rx_task(
 
                                             if module_level_str == "-" {
                                                 log::info!("Module logging override cleared for '{}'", module_filter);
-                                                critical_section::with(|cs| {
-                                                    if let Some(x) = *LOG_SETTINGS.borrow(cs).borrow() {
-                                                        unsafe {
-                                                            log::set_max_level_racy(x.other_level);
-                                                        }
+                                                if let Some(settings) = get_log_settings() {
+                                                    unsafe {
+                                                        log::set_max_level_racy(settings.other_level);
                                                     }
-                                                    *LOG_SETTINGS.borrow(cs).borrow_mut() = None;
-                                                });
+                                                }
+                                                set_log_settings(None);
                                                 buf_position = 0; // Reset buffer for next command
                                                 buf = [0u8; USB_READ_BUFFER_SIZE];
                                                 continue;
@@ -394,10 +404,7 @@ async fn usb_rx_task(
                                             }
 
                                             let settings = LogModuleSettings::new(module_filter, module_level, other_level);
-
-                                            critical_section::with(|cs| {
-                                                *LOG_SETTINGS.borrow(cs).borrow_mut() = Some(settings);
-                                            });
+                                            set_log_settings(Some(settings));
 
                                             log::info!("Module logging override: module='{}' module_level={:?}", module_filter, module_level);
                                         }
@@ -422,7 +429,8 @@ async fn usb_rx_task(
                             } else {
                                 buf[USB_READ_BUFFER_SIZE - 1] = 0;
                             }
-                            let _ = sender.send(buf).await;
+                            // Use try_send to avoid blocking if channel is full
+                            let _ = sender.try_send(buf);
                         }
                     }
                     buf_position = 0; // Reset buffer for next command
