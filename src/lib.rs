@@ -188,7 +188,7 @@ impl Write for LogMessage {
 }
 
 /// Channel type for sending log messages from the application to the USB sender task.
-type LogChannel = Channel<CriticalSectionRawMutex, LogMessage, 4>;
+type LogChannel = Channel<CriticalSectionRawMutex, LogMessage, 16>;
 static LOG_CHANNEL: LogChannel = Channel::new();
 
 // Log settings protected by critical section for dual-core safety.
