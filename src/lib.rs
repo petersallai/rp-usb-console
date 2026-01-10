@@ -188,7 +188,17 @@ impl Write for LogMessage {
 }
 
 /// Channel type for sending log messages from the application to the USB sender task.
-type LogChannel = Channel<CriticalSectionRawMutex, LogMessage, 16>;
+///
+/// Each `LogMessage` contains a 255-byte buffer, so the total memory usage of this channel is
+/// approximately `CAPACITY × 255` bytes plus channel bookkeeping. A capacity of 32 was chosen
+/// as a balance between buffering bursty logs and conserving RAM on RP2040-class MCUs with
+/// limited memory. Increase this value only if profiling shows frequent log drops and your
+/// application can afford the additional static RAM usage.
+type LogChannel = Channel<CriticalSectionRawMutex, LogMessage, 32>;
+/// The capacity of 100 messages is chosen to absorb short bursts of log output without
+/// dropping messages under high load, while still keeping RAM usage acceptable on the
+/// target device. Each slot holds a single fixed-size `LogMessage`.
+type LogChannel = Channel<CriticalSectionRawMutex, LogMessage, 100>;
 static LOG_CHANNEL: LogChannel = Channel::new();
 
 // Log settings protected by critical section for dual-core safety.
