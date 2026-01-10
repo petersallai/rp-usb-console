@@ -192,13 +192,15 @@ impl Write for LogMessage {
 /// Each `LogMessage` contains a 255-byte buffer, so the total memory usage of this channel is
 /// approximately `CAPACITY × 255` bytes plus channel bookkeeping. A capacity of 32 was chosen
 /// as a balance between buffering bursty logs and conserving RAM on RP2040-class MCUs with
-/// limited memory. Increase this value only if profiling shows frequent log drops and your
-/// application can afford the additional static RAM usage.
+/// limited memory.
+///
+/// Earlier revisions of this module experimented with higher capacities (for example, 100
+/// messages), but this significantly increased static RAM usage without a proportional benefit
+/// on typical RP2040 workloads. The current capacity of 32 is therefore an intentional
+/// compromise. Increase this value only if profiling shows frequent log drops and your
+/// application can afford the additional static RAM usage; conversely, you may reduce it further
+/// on extremely memory-constrained systems at the cost of more aggressive log dropping.
 type LogChannel = Channel<CriticalSectionRawMutex, LogMessage, 32>;
-/// The capacity of 100 messages is chosen to absorb short bursts of log output without
-/// dropping messages under high load, while still keeping RAM usage acceptable on the
-/// target device. Each slot holds a single fixed-size `LogMessage`.
-type LogChannel = Channel<CriticalSectionRawMutex, LogMessage, 100>;
 static LOG_CHANNEL: LogChannel = Channel::new();
 
 // Log settings protected by critical section for dual-core safety.
