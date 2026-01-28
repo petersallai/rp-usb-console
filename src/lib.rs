@@ -200,7 +200,7 @@ impl Write for LogMessage {
 /// compromise. Increase this value only if profiling shows frequent log drops and your
 /// application can afford the additional static RAM usage; conversely, you may reduce it further
 /// on extremely memory-constrained systems at the cost of more aggressive log dropping.
-type LogChannel = Channel<CriticalSectionRawMutex, LogMessage, 32>;
+type LogChannel = Channel<CriticalSectionRawMutex, LogMessage, 10>;
 static LOG_CHANNEL: LogChannel = Channel::new();
 
 // Log settings protected by critical section for dual-core safety.
@@ -277,6 +277,9 @@ impl Log for USBLogger {
 
             let mut message = LogMessage::new();
             let path = if let Some(p) = record.module_path() { p } else { "" };
+            if message.len + path.len() + 10 >= 255 {
+                return; // Avoid exceeding buffer capacity
+            }
             if write!(&mut message, "[{}] {}: {}\r\n", record.level(), path, record.args()).is_ok() {
                 // Non-blocking send. If the channel is full, the message is dropped.
                 let _ = LOG_CHANNEL.try_send(message);
@@ -472,7 +475,6 @@ async fn usb_tx_task(mut sender: UsbSender<'static, Driver<'static, USB>>) {
             let mut problem = false;
             for i in 0..message.packet_count() {
                 let packet = message.as_packet_bytes(i);
-
                 // Send the log message over USB. If sending fails, break to wait for reconnection.
                 if sender.write_packet(packet).await.is_err() {
                     problem = true;
