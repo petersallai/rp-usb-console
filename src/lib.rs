@@ -82,7 +82,6 @@ use embassy_sync::channel::{Channel, Sender};
 use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver, Sender as UsbSender, State};
 use embassy_usb::{Builder, UsbDevice};
 use log::{Level, LevelFilter, Log, Metadata, Record};
-use rp2040_hal::rom_data::reset_to_usb_boot;
 
 bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => InterruptHandler<USB>;
@@ -328,10 +327,12 @@ async fn usb_rx_task(
                     if let Ok(command_str) = core::str::from_utf8(&buf[0..3]) {
                         match command_str {
                             "/BS" => {
-                                reset_to_usb_boot(0, 0);
+                                embassy_rp::rom_data::reset_to_usb_boot(0, 0);
                             }
                             "/RS" => {
-                                rp2040_hal::reset();
+                                processed = true;
+                                const REBOOT2_FLAG_NO_RETURN_ON_SUCCESS: u32 = 0x100;
+                                embassy_rp::rom_data::reboot(REBOOT2_FLAG_NO_RETURN_ON_SUCCESS, 10, 0, 0);
                             }
                             "/LT" => {
                                 processed = true;

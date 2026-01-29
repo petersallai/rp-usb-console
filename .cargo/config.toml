@@ -1,2 +1,3 @@
 [build]
-target = "thumbv6m-none-eabi"        # Cortex-M0 and Cortex-M0+
+# Set the default target to match the Cortex-M33 in the RP2350
+target = "thumbv8m.main-none-eabihf"
