@@ -2,12 +2,12 @@
 #![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
 
-//! USB CDC logging & command channel for RP2040 (embassy).
+//! USB CDC logging & command channel for RP2040 and RP2350 (embassy).
 //!
 //! This crate provides a zero-heap solution for bidirectional USB communication
-//! on RP2040 microcontrollers using the Embassy async framework. It enables both
-//! logging output and line-buffered command input (terminated by `\r`, `\n`, or
-//! `\r\n`) over a standard USB CDC ACM interface.
+//! on RP2040 and RP2350 microcontrollers using the Embassy async framework.
+//! It enables both logging output and line-buffered command input
+//!  (terminated by `\r`, `\n`, or `\r\n`) over a standard USB CDC ACM interface.
 //!
 //! # Quick Start
 //!
@@ -69,6 +69,11 @@
 //! - **Reliability**: Fragmented transmission reduces host-side latency issues
 //! - **Safety**: Single-core assumptions with proper synchronization primitives
 
+#[cfg(all(feature = "rp2040", feature = "rp235xa"))]
+compile_error!("Feature 'rp2040' and 'rp235xa' cannot be enabled at the same time. You'll have to decide on the hardware you are using!");
+#[cfg(not(any(feature = "rp2040", feature = "rp235xa")))]
+compile_error!("Select feature 'rp2040' or 'rp235xa' depending on your hardware.");
+
 use core::cell::{RefCell, UnsafeCell};
 use core::cmp::min;
 use core::fmt::{Result as FmtResult, Write};
@@ -82,7 +87,6 @@ use embassy_sync::channel::{Channel, Sender};
 use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver, Sender as UsbSender, State};
 use embassy_usb::{Builder, UsbDevice};
 use log::{Level, LevelFilter, Log, Metadata, Record};
-use rp2040_hal::rom_data::reset_to_usb_boot;
 
 bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => InterruptHandler<USB>;
@@ -328,10 +332,12 @@ async fn usb_rx_task(
                     if let Ok(command_str) = core::str::from_utf8(&buf[0..3]) {
                         match command_str {
                             "/BS" => {
-                                reset_to_usb_boot(0, 0);
+                                embassy_rp::rom_data::reset_to_usb_boot(0, 0);
                             }
                             "/RS" => {
-                                rp2040_hal::reset();
+                                processed = true;
+                                const REBOOT2_FLAG_NO_RETURN_ON_SUCCESS: u32 = 0x100;
+                                embassy_rp::rom_data::reboot(REBOOT2_FLAG_NO_RETURN_ON_SUCCESS, 10, 0, 0);
                             }
                             "/LT" => {
                                 processed = true;
