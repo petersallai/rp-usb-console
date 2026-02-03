@@ -116,6 +116,8 @@ Fixed-size message buffer with USB packet fragmentation support.
 - **Truncation**: Messages exceeding capacity are truncated with ellipsis
 - **Fragmentation**: Automatically split into 64-byte USB packets
 
+This crate installs with `log` feature enabled by default. In case you don't want the log output on your console (because you use `defmt` or other ways of logging) set `default-features = false` in your `Config.toml` and use `start()` without the `level` parameter.
+
 ## Implementation Details
 
 ### Memory Management

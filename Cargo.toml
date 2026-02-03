@@ -41,5 +41,7 @@ critical-section = "1.1"
 log = "0.4"
 
 [features]
+default = ["log"]
+log = []
 rp2040 = ["embassy-rp/rp2040"]
 rp235xa = ["embassy-rp/rp235xa"]

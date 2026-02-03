@@ -540,7 +540,61 @@ async fn usb_device_task(mut usb: UsbDevice<'static, Driver<'static, USB>>) {
 /// );
 /// # }
 /// ```
+
+#[cfg(feature = "log")]
 pub fn start(
+    spawner: Spawner,
+    level: LevelFilter,
+    usb_peripheral: Peri<'static, USB>,
+    command_sender: Option<Sender<'static, CriticalSectionRawMutex, [u8; USB_READ_BUFFER_SIZE], 4>>,
+) {
+    start_impl(spawner, level, usb_peripheral, command_sender)
+}
+
+/// Initialize USB command channel, spawning all necessary tasks, but without logging enabled.
+///
+/// This function sets up the USB CDC ACM interface for bidirectional communication
+/// and spawns three tasks to handle the USB device, transmission, and reception.
+/// It also initializes the global logger to forward log messages over USB.
+///
+/// # Arguments
+///
+/// * `spawner` - Embassy task spawner for creating the USB tasks
+/// * `usb_peripheral` - RP2040 USB peripheral instance
+/// * `command_sender` - Optional channel sender for receiving line-buffered commands from the host (`None` disables forwarding)
+///
+/// # Panics
+///
+/// Panics if called more than once, as it sets the global logger.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use embassy_executor::Spawner;
+/// use embassy_sync::channel::Channel;
+/// use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+///
+/// static COMMAND_CHANNEL: Channel<CriticalSectionRawMutex, [u8; rp_usb_console::USB_READ_BUFFER_SIZE], 4> = Channel::new();
+///
+/// # async fn example(spawner: Spawner, usb_peripheral: embassy_rp::peripherals::USB) {
+/// rp_usb_console::start(
+///     spawner,
+///     usb_peripheral,
+///     Some(COMMAND_CHANNEL.sender()),
+/// );
+/// # }
+/// ```
+
+#[cfg(not(feature = "log"))]
+pub fn start(
+    spawner: Spawner,
+    usb_peripheral: Peri<'static, USB>,
+    command_sender: Option<Sender<'static, CriticalSectionRawMutex, [u8; USB_READ_BUFFER_SIZE], 4>>,
+) {
+    start_impl(spawner, log::LevelFilter::Off, usb_peripheral, command_sender)
+}
+
+fn start_impl(
     spawner: Spawner,
     level: LevelFilter,
     usb_peripheral: Peri<'static, USB>,
