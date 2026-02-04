@@ -164,6 +164,23 @@ impl LogMessage {
         }
     }
 
+    /// Append bytes (UTF-8 bytes) truncating if capacity exceeded.
+    ///
+    /// If the message would exceed the 255-byte capacity, it is truncated
+    /// and the last three bytes are replaced with dots to indicate truncation.
+    fn push_bytes(&mut self, bs: &[u8]) {
+        for &b in bs {
+            if self.len >= self.buf.len() {
+                self.buf[self.len - 1] = b'.'; // Indicate truncation with ellipsis
+                self.buf[self.len - 2] = b'.';
+                self.buf[self.len - 3] = b'.';
+                break;
+            }
+            self.buf[self.len] = b;
+            self.len += 1;
+        }
+    }
+
     /// Number of 64-byte USB packets required to send this message.
     ///
     /// Returns the minimum number of USB packets needed to transmit the
@@ -312,6 +329,7 @@ async fn usb_rx_task(
 ) {
     let mut buf = [0u8; USB_READ_BUFFER_SIZE];
     let mut buf_position: usize = 0;
+    let mut echo = cfg!(feature = "echo");
     loop {
         receiver.wait_connection().await;
         let mut read_buf = [0u8; USB_READ_BUFFER_SIZE];
@@ -323,6 +341,12 @@ async fn usb_rx_task(
                     }
                     buf[buf_position..buf_position + len].copy_from_slice(&read_buf[..len]);
                     buf_position += len;
+
+                    if echo {
+                        let mut message = LogMessage::new();
+                        message.push_bytes(&read_buf[..len]);
+                        let _ = LOG_CHANNEL.try_send(message);
+                    }
 
                     if !(buf.contains(&b'\n') || buf.contains(&b'\r')) {
                         continue; // Wait for more data
@@ -338,6 +362,16 @@ async fn usb_rx_task(
                                 processed = true;
                                 const REBOOT2_FLAG_NO_RETURN_ON_SUCCESS: u32 = 0x100;
                                 embassy_rp::rom_data::reboot(REBOOT2_FLAG_NO_RETURN_ON_SUCCESS, 10, 0, 0);
+                            }
+                            "/E0" => {
+                                processed = true;
+                                echo = false;
+                                log::debug!("Echo disabled");
+                            }
+                            "/E1" => {
+                                processed = true;
+                                echo = true;
+                                log::debug!("Echo enabled");
                             }
                             "/LT" => {
                                 processed = true;
@@ -441,6 +475,15 @@ async fn usb_rx_task(
 
                             _ => {}
                         }
+                    }
+                    if echo {
+                        let mut message = LogMessage::new();
+                        if processed || buf_position < 2 {
+                            message.push_str("\r\n> ");
+                        } else if !processed && buf_position > 1 {
+                            message.push_str("\r\n");
+                        }
+                        let _ = LOG_CHANNEL.try_send(message);
                     }
                     if !processed && buf_position > 1 {
                         if let Some(sender) = &command_sender {

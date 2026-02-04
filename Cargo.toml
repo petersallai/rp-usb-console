@@ -42,6 +42,7 @@ log = "0.4"
 
 [features]
 default = ["log"]
+echo = []
 log = []
 rp2040 = ["embassy-rp/rp2040"]
 rp235xa = ["embassy-rp/rp235xa"]

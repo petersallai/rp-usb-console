@@ -17,6 +17,8 @@ When developing for the Raspberry Pi Pico, you typically have two choices: debug
 - `/LM <module_filter>,<Loglevel>`: Set specific loglevel for modules containing module filter
 - `/BS`: Reboot Pico to Boot Select (to deploy applications)
 - `/RS`: Reset Pico
+- `/E0`: Turns `echo` off
+- `/E1`: Turns `echo` on (chars sent are echoed back for display)
 
 All command must be ended with `/r` or `/n` or both.
 
@@ -151,6 +153,7 @@ This crate installs with `log` feature enabled by default. In case you don't wan
 - Configurable line ending options (CRLF/LF)
 - Optional timestamp formatting
 - Extended formatting features
+- Support cursor movements and char deletion (delete, backspace)
 
 ## License
 
