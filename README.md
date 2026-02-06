@@ -82,9 +82,9 @@ async fn main(spawner: Spawner) {
 async fn command_handler() {
     let receiver = COMMAND_CHANNEL.receiver();
     loop {
-    let command = receiver.receive().await;
-    // Process received command data (terminated by CR/LF; trailing zeros may be present)
-    info!("Received command: {:?}", command);
+        let command = receiver.receive().await;
+        // Process received command data (terminated by CR/LF; trailing zeros may be present)
+        info!("Received command: {:?}", command);
     }
 }
 ```
