@@ -81,9 +81,9 @@ use critical_section::Mutex as CsMutex;
 use embassy_executor::Spawner;
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Driver, InterruptHandler};
-use embassy_rp::{bind_interrupts, Peri};
+use embassy_rp::{Peri, bind_interrupts};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::{Channel, Sender, Receiver};
+use embassy_sync::channel::{Channel, Receiver, Sender};
 use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver as UsbReceiver, Sender as UsbSender, State};
 use embassy_usb::{Builder, UsbDevice};
 use log::{Level, LevelFilter, Log, Metadata, Record};
@@ -453,7 +453,11 @@ async fn usb_rx_task(
                                             let settings = LogModuleSettings::new(module_filter, module_level, other_level);
                                             set_log_settings(Some(settings));
 
-                                            log::info!("Module logging override: module='{}' module_level={:?}", module_filter, module_level);
+                                            log::info!(
+                                                "Module logging override: module='{}' module_level={:?}",
+                                                module_filter,
+                                                module_level
+                                            );
                                         }
                                         _ => {
                                             log::error!(
@@ -499,9 +503,7 @@ async fn usb_rx_task(
 }
 
 #[embassy_executor::task]
-async fn data_receiver_task(
-    command_sender: Option<Receiver<'static, CriticalSectionRawMutex, [u8; USB_READ_BUFFER_SIZE], 4>>,
-) {
+async fn data_receiver_task(command_sender: Option<Receiver<'static, CriticalSectionRawMutex, [u8; USB_READ_BUFFER_SIZE], 4>>) {
     if let Some(receiver) = &command_sender {
         loop {
             let message = receiver.receive().await;
