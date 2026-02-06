@@ -68,6 +68,7 @@ async fn main(spawner: Spawner) {
         log::LevelFilter::Info,
         p.USB,
         Some(COMMAND_CHANNEL.sender()),
+        None,
     );
     
     // Now you can use standard log macros
@@ -84,6 +85,86 @@ async fn command_handler() {
     let command = receiver.receive().await;
     // Process received command data (terminated by CR/LF; trailing zeros may be present)
     info!("Received command: {:?}", command);
+    }
+}
+```
+
+The crate supports communication both ways, so if you disable `log` feature (e.g. use `defmt` crate to log via debug probe) and enable `echo` feature, you can use the crate as interactive console to your Pico:
+
+```rust
+use embassy_executor::Spawner;
+use embassy_rp as hal;
+use embassy_rp::gpio::{Level, Output};
+
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::channel::Channel;
+
+use rp_usb_console::{LogMessage, USB_READ_BUFFER_SIZE};
+
+// channel for receiving commands from USB
+static COMMAND_CHANNEL: Channel<CriticalSectionRawMutex, [u8; USB_READ_BUFFER_SIZE], 4> = Channel::new();
+// channel for sending data to USB
+static DATA_CHANNEL: Channel<CriticalSectionRawMutex, [u8; USB_READ_BUFFER_SIZE], 4> = Channel::new();
+// channel for setting LED state
+static LED_CH: Channel<CriticalSectionRawMutex, u8, 4> = Channel::new();
+
+#[embassy_executor::main]
+async fn main(spawner: Spawner) {
+    let p = embassy_rp::init(Default::default());
+
+    // Initialize USB console
+    rp_usb_console::start(spawner, p.USB, Some(COMMAND_CHANNEL.sender()), Some(DATA_CHANNEL.receiver()));
+
+    // Handle incoming commands in a separate task
+    spawner.spawn(command_handler()).unwrap();
+
+    info!("--- Applicaton started ---");
+
+    let receiver = LED_CH.receiver();
+    let mut led = Output::new(p.PIN_25, Level::Low);
+    loop {
+        let command = receiver.receive().await;
+        if command == 0 {
+            led.set_low();
+        } else {
+            led.set_high();
+        }
+        info!("LED set to {}", command);
+    }
+}
+
+#[embassy_executor::task]
+async fn command_handler() {
+    let receiver = COMMAND_CHANNEL.receiver();
+    let led = LED_CH.sender();
+
+    loop {
+        let command = receiver.receive().await;
+        if let Ok(command_str) = core::str::from_utf8(&command[0..4]) {
+            match command_str {
+                "help" => {
+                    let string = "set LED state\r\n    led0    power off LED\r\n    led1    power on LED\r\n";
+                    let mut message = LogMessage::new();
+                    message.push_str(string);
+                    let _ = DATA_CHANNEL.try_send(message.buf);
+                }
+                "led0" => {
+                    let _ = led.try_send(0).unwrap();
+                }
+                "led1" => {
+                    let _ = led.try_send(1).unwrap();
+                }
+                _ => {
+                    let mut message = LogMessage::new();
+                    message.push_str("Error: unknown command\r\n");
+                    let _ = DATA_CHANNEL.try_send(message.buf);
+                    info!("Received unknown command: {:?}", command_str);
+                }
+            }
+        }
+        let mut message = LogMessage::new();
+        message.push_str("> ");
+        let _ = DATA_CHANNEL.try_send(message.buf);
     }
 }
 ```

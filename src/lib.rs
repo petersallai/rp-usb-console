@@ -83,8 +83,8 @@ use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Driver, InterruptHandler};
 use embassy_rp::{bind_interrupts, Peri};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::{Channel, Sender};
-use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver, Sender as UsbSender, State};
+use embassy_sync::channel::{Channel, Sender, Receiver};
+use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver as UsbReceiver, Sender as UsbSender, State};
 use embassy_usb::{Builder, UsbDevice};
 use log::{Level, LevelFilter, Log, Metadata, Record};
 
@@ -138,7 +138,8 @@ impl LogModuleSettings {
 /// ```
 pub struct LogMessage {
     len: usize,
-    buf: [u8; 255],
+    /// Byte buffer for messages
+    pub buf: [u8; 255],
 }
 
 impl LogMessage {
@@ -151,17 +152,8 @@ impl LogMessage {
     ///
     /// If the message would exceed the 255-byte capacity, it is truncated
     /// and the last three bytes are replaced with dots to indicate truncation.
-    fn push_str(&mut self, s: &str) {
-        for &b in s.as_bytes() {
-            if self.len >= self.buf.len() {
-                self.buf[self.len - 1] = b'.'; // Indicate truncation with ellipsis
-                self.buf[self.len - 2] = b'.';
-                self.buf[self.len - 3] = b'.';
-                break;
-            }
-            self.buf[self.len] = b;
-            self.len += 1;
-        }
+    pub fn push_str(&mut self, s: &str) {
+        self.push_bytes(s.as_bytes())
     }
 
     /// Append bytes (UTF-8 bytes) truncating if capacity exceeded.
@@ -324,7 +316,7 @@ static LOGGER: USBLogger = USBLogger;
 /// The task automatically handles USB disconnection/reconnection cycles.
 #[embassy_executor::task]
 async fn usb_rx_task(
-    mut receiver: Receiver<'static, Driver<'static, USB>>,
+    mut receiver: UsbReceiver<'static, Driver<'static, USB>>,
     command_sender: Option<Sender<'static, CriticalSectionRawMutex, [u8; USB_READ_BUFFER_SIZE], 4>>,
 ) {
     let mut buf = [0u8; USB_READ_BUFFER_SIZE];
@@ -506,6 +498,22 @@ async fn usb_rx_task(
     }
 }
 
+#[embassy_executor::task]
+async fn data_receiver_task(
+    command_sender: Option<Receiver<'static, CriticalSectionRawMutex, [u8; USB_READ_BUFFER_SIZE], 4>>,
+) {
+    if let Some(receiver) = &command_sender {
+        loop {
+            let message = receiver.receive().await;
+            if let Ok(data) = core::str::from_utf8(&message) {
+                let mut message = LogMessage::new();
+                message.push_str(data);
+                let _ = LOG_CHANNEL.try_send(message);
+            }
+        }
+    }
+}
+
 /// USB transmit task that sends log messages over USB.
 ///
 /// This task drains the internal log channel and transmits each message by
@@ -558,6 +566,7 @@ async fn usb_device_task(mut usb: UsbDevice<'static, Driver<'static, USB>>) {
 /// * `level` - Maximum log level to transmit (e.g., `LevelFilter::Info`)
 /// * `usb_peripheral` - RP2040 USB peripheral instance
 /// * `command_sender` - Optional channel sender for receiving line-buffered commands from the host (`None` disables forwarding)
+/// * `data_receiver`  - Optional channel receiver for sending commands to the host (`None` disables forwarding)
 ///
 /// # Panics
 ///
@@ -580,6 +589,7 @@ async fn usb_device_task(mut usb: UsbDevice<'static, Driver<'static, USB>>) {
 ///     LevelFilter::Info,
 ///     usb_peripheral,
 ///     Some(COMMAND_CHANNEL.sender()),
+///     None,
 /// );
 /// # }
 /// ```
@@ -590,8 +600,9 @@ pub fn start(
     level: LevelFilter,
     usb_peripheral: Peri<'static, USB>,
     command_sender: Option<Sender<'static, CriticalSectionRawMutex, [u8; USB_READ_BUFFER_SIZE], 4>>,
+    data_receiver: Option<Receiver<'static, CriticalSectionRawMutex, [u8; USB_READ_BUFFER_SIZE], 4>>,
 ) {
-    start_impl(spawner, level, usb_peripheral, command_sender)
+    start_impl(spawner, level, usb_peripheral, command_sender, data_receiver)
 }
 
 /// Initialize USB command channel, spawning all necessary tasks, but without logging enabled.
@@ -605,6 +616,7 @@ pub fn start(
 /// * `spawner` - Embassy task spawner for creating the USB tasks
 /// * `usb_peripheral` - RP2040 USB peripheral instance
 /// * `command_sender` - Optional channel sender for receiving line-buffered commands from the host (`None` disables forwarding)
+/// * `data_receiver`  - Optional channel receiver for sending commands to the host (`None` disables forwarding)
 ///
 /// # Panics
 ///
@@ -624,6 +636,7 @@ pub fn start(
 ///     spawner,
 ///     usb_peripheral,
 ///     Some(COMMAND_CHANNEL.sender()),
+///     None,
 /// );
 /// # }
 /// ```
@@ -633,8 +646,9 @@ pub fn start(
     spawner: Spawner,
     usb_peripheral: Peri<'static, USB>,
     command_sender: Option<Sender<'static, CriticalSectionRawMutex, [u8; USB_READ_BUFFER_SIZE], 4>>,
+    data_receiver: Option<Receiver<'static, CriticalSectionRawMutex, [u8; USB_READ_BUFFER_SIZE], 4>>,
 ) {
-    start_impl(spawner, log::LevelFilter::Off, usb_peripheral, command_sender)
+    start_impl(spawner, log::LevelFilter::Off, usb_peripheral, command_sender, data_receiver)
 }
 
 fn start_impl(
@@ -642,6 +656,7 @@ fn start_impl(
     level: LevelFilter,
     usb_peripheral: Peri<'static, USB>,
     command_sender: Option<Sender<'static, CriticalSectionRawMutex, [u8; USB_READ_BUFFER_SIZE], 4>>,
+    data_receiver: Option<Receiver<'static, CriticalSectionRawMutex, [u8; USB_READ_BUFFER_SIZE], 4>>,
 ) {
     // Initialize the logger (use racy variants on targets without atomic ptr support, e.g. thumbv6m/RP2040)
     unsafe {
@@ -684,4 +699,5 @@ fn start_impl(
     spawner.spawn(usb_device_task(usb)).unwrap();
     spawner.spawn(usb_tx_task(sender)).unwrap();
     spawner.spawn(usb_rx_task(receiver, command_sender)).unwrap();
+    spawner.spawn(data_receiver_task(data_receiver)).unwrap();
 }
