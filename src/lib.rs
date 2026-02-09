@@ -344,6 +344,12 @@ async fn usb_rx_task(
                         continue; // Wait for more data
                     }
 
+                    // Remove trailing carriage return
+                    if buf[buf_position - 1] == b'\r' {
+                        buf[buf_position - 1] = 0;
+                        buf_position -= 1;
+                    }
+
                     let mut processed = false;
                     if let Ok(command_str) = core::str::from_utf8(&buf[0..3]) {
                         match command_str {
