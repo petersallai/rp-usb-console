@@ -238,7 +238,7 @@ This crate installs with `log` feature enabled by default. In case you don't wan
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE.md) file for details.
 
 ## Contributing
 

@@ -134,8 +134,6 @@ impl LogModuleSettings {
 /// This struct provides a fixed-size buffer for log messages that can be efficiently
 /// transmitted over USB by fragmenting into smaller packets. Messages longer than the
 /// buffer capacity are automatically truncated with an ellipsis indicator.
-///
-/// ```
 pub struct LogMessage {
     len: usize,
     /// Byte buffer for messages
