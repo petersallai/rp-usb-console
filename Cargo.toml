@@ -4,12 +4,12 @@ version = "0.2.4"
 edition = "2021"
 authors = ["Bad Access Kft."]
 license = "MIT"
-description = "Zero-heap USB CDC logging and command channel for RP2040 with Embassy async framework"
+description = "Zero-heap USB CDC logging and command channel for RP2040 and RP2350 with Embassy async framework"
 repository = "https://github.com/petersallai/rp-usb-console"
 homepage = "https://github.com/petersallai/rp-usb-console"
 documentation = "https://docs.rs/rp-usb-console"
 readme = "README.md"
-keywords = ["rp2040", "usb", "logging", "embassy", "embedded"]
+keywords = ["rp2040", "rp2350", "usb", "logging", "embassy", "embedded"]
 categories = ["embedded", "hardware-support", "development-tools::debugging"]
 rust-version = "1.75"
 exclude = [
@@ -27,17 +27,22 @@ bench = false
 
 [package.metadata.docs.rs]
 all-features = true
-targets = ["thumbv6m-none-eabi"]
+targets = ["thumbv6m-none-eabi", "thumbv8m.main-none-eabihf"]
 
 [dependencies]
 
-embassy-sync = { version = "0.7"}
-embassy-executor = { version = "0.9", features = []}
-embassy-rp = { version = "0.8",features = ["unstable-pac", "time-driver", "critical-section-impl", "rp2040"]}
+embassy-sync = { version = "0.7" }
+embassy-executor = { version = "0.9" }
+embassy-rp = { version = "0.9", features = ["unstable-pac", "time-driver", "critical-section-impl"] }
 embassy-usb = { version = "0.5.0" }
-
-rp2040-hal = { version = "0.11"}
 
 critical-section = "1.1"
 
 log = "0.4"
+
+[features]
+default = ["log"]
+echo = []
+log = []
+rp2040 = ["embassy-rp/rp2040"]
+rp235xa = ["embassy-rp/rp235xa"]

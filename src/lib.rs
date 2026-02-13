@@ -2,12 +2,12 @@
 #![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
 
-//! USB CDC logging & command channel for RP2040 (embassy).
+//! USB CDC logging & command channel for RP2040 and RP2350 (embassy).
 //!
 //! This crate provides a zero-heap solution for bidirectional USB communication
-//! on RP2040 microcontrollers using the Embassy async framework. It enables both
-//! logging output and line-buffered command input (terminated by `\r`, `\n`, or
-//! `\r\n`) over a standard USB CDC ACM interface.
+//! on RP2040 and RP2350 microcontrollers using the Embassy async framework.
+//! It enables both logging output and line-buffered command input
+//!  (terminated by `\r`, `\n`, or `\r\n`) over a standard USB CDC ACM interface.
 //!
 //! # Quick Start
 //!
@@ -69,6 +69,11 @@
 //! - **Reliability**: Fragmented transmission reduces host-side latency issues
 //! - **Safety**: Single-core assumptions with proper synchronization primitives
 
+#[cfg(all(feature = "rp2040", feature = "rp235xa"))]
+compile_error!("Feature 'rp2040' and 'rp235xa' cannot be enabled at the same time. You'll have to decide on the hardware you are using!");
+#[cfg(not(any(feature = "rp2040", feature = "rp235xa")))]
+compile_error!("Select feature 'rp2040' or 'rp235xa' depending on your hardware.");
+
 use core::cell::{RefCell, UnsafeCell};
 use core::cmp::min;
 use core::fmt::{Result as FmtResult, Write};
@@ -76,13 +81,12 @@ use critical_section::Mutex as CsMutex;
 use embassy_executor::Spawner;
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Driver, InterruptHandler};
-use embassy_rp::{bind_interrupts, Peri};
+use embassy_rp::{Peri, bind_interrupts};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::{Channel, Sender};
-use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver, Sender as UsbSender, State};
+use embassy_sync::channel::{Channel, Receiver, Sender};
+use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver as UsbReceiver, Sender as UsbSender, State};
 use embassy_usb::{Builder, UsbDevice};
 use log::{Level, LevelFilter, Log, Metadata, Record};
-use rp2040_hal::rom_data::reset_to_usb_boot;
 
 bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => InterruptHandler<USB>;
@@ -130,11 +134,10 @@ impl LogModuleSettings {
 /// This struct provides a fixed-size buffer for log messages that can be efficiently
 /// transmitted over USB by fragmenting into smaller packets. Messages longer than the
 /// buffer capacity are automatically truncated with an ellipsis indicator.
-///
-/// ```
 pub struct LogMessage {
     len: usize,
-    buf: [u8; 255],
+    /// Byte buffer for messages
+    pub buf: [u8; 255],
 }
 
 impl LogMessage {
@@ -147,8 +150,16 @@ impl LogMessage {
     ///
     /// If the message would exceed the 255-byte capacity, it is truncated
     /// and the last three bytes are replaced with dots to indicate truncation.
-    fn push_str(&mut self, s: &str) {
-        for &b in s.as_bytes() {
+    pub fn push_str(&mut self, s: &str) {
+        self.push_bytes(s.as_bytes())
+    }
+
+    /// Append bytes (UTF-8 bytes) truncating if capacity exceeded.
+    ///
+    /// If the message would exceed the 255-byte capacity, it is truncated
+    /// and the last three bytes are replaced with dots to indicate truncation.
+    fn push_bytes(&mut self, bs: &[u8]) {
+        for &b in bs {
             if self.len >= self.buf.len() {
                 self.buf[self.len - 1] = b'.'; // Indicate truncation with ellipsis
                 self.buf[self.len - 2] = b'.';
@@ -303,11 +314,12 @@ static LOGGER: USBLogger = USBLogger;
 /// The task automatically handles USB disconnection/reconnection cycles.
 #[embassy_executor::task]
 async fn usb_rx_task(
-    mut receiver: Receiver<'static, Driver<'static, USB>>,
+    mut receiver: UsbReceiver<'static, Driver<'static, USB>>,
     command_sender: Option<Sender<'static, CriticalSectionRawMutex, [u8; USB_READ_BUFFER_SIZE], 4>>,
 ) {
     let mut buf = [0u8; USB_READ_BUFFER_SIZE];
     let mut buf_position: usize = 0;
+    let mut echo = cfg!(feature = "echo");
     loop {
         receiver.wait_connection().await;
         let mut read_buf = [0u8; USB_READ_BUFFER_SIZE];
@@ -320,18 +332,42 @@ async fn usb_rx_task(
                     buf[buf_position..buf_position + len].copy_from_slice(&read_buf[..len]);
                     buf_position += len;
 
+                    if echo {
+                        let mut message = LogMessage::new();
+                        message.push_bytes(&read_buf[..len]);
+                        let _ = LOG_CHANNEL.try_send(message);
+                    }
+
                     if !(buf.contains(&b'\n') || buf.contains(&b'\r')) {
                         continue; // Wait for more data
+                    }
+
+                    // Remove trailing carriage return
+                    if buf[buf_position - 1] == b'\r' {
+                        buf[buf_position - 1] = 0;
+                        buf_position -= 1;
                     }
 
                     let mut processed = false;
                     if let Ok(command_str) = core::str::from_utf8(&buf[0..3]) {
                         match command_str {
                             "/BS" => {
-                                reset_to_usb_boot(0, 0);
+                                embassy_rp::rom_data::reset_to_usb_boot(0, 0);
                             }
                             "/RS" => {
-                                rp2040_hal::reset();
+                                processed = true;
+                                const REBOOT2_FLAG_NO_RETURN_ON_SUCCESS: u32 = 0x100;
+                                embassy_rp::rom_data::reboot(REBOOT2_FLAG_NO_RETURN_ON_SUCCESS, 10, 0, 0);
+                            }
+                            "/E0" => {
+                                processed = true;
+                                echo = false;
+                                log::debug!("Echo disabled");
+                            }
+                            "/E1" => {
+                                processed = true;
+                                echo = true;
+                                log::debug!("Echo enabled");
                             }
                             "/LT" => {
                                 processed = true;
@@ -421,7 +457,11 @@ async fn usb_rx_task(
                                             let settings = LogModuleSettings::new(module_filter, module_level, other_level);
                                             set_log_settings(Some(settings));
 
-                                            log::info!("Module logging override: module='{}' module_level={:?}", module_filter, module_level);
+                                            log::info!(
+                                                "Module logging override: module='{}' module_level={:?}",
+                                                module_filter,
+                                                module_level
+                                            );
                                         }
                                         _ => {
                                             log::error!(
@@ -435,6 +475,15 @@ async fn usb_rx_task(
 
                             _ => {}
                         }
+                    }
+                    if echo {
+                        let mut message = LogMessage::new();
+                        if processed || buf_position < 2 {
+                            message.push_str("\r\n> ");
+                        } else if !processed && buf_position > 1 {
+                            message.push_str("\r\n");
+                        }
+                        let _ = LOG_CHANNEL.try_send(message);
                     }
                     if !processed && buf_position > 1 {
                         if let Some(sender) = &command_sender {
@@ -452,6 +501,20 @@ async fn usb_rx_task(
                     buf = [0u8; USB_READ_BUFFER_SIZE];
                 }
                 Err(_) => break,
+            }
+        }
+    }
+}
+
+#[embassy_executor::task]
+async fn data_receiver_task(command_sender: Option<Receiver<'static, CriticalSectionRawMutex, [u8; USB_READ_BUFFER_SIZE], 4>>) {
+    if let Some(receiver) = &command_sender {
+        loop {
+            let message = receiver.receive().await;
+            if let Ok(data) = core::str::from_utf8(&message) {
+                let mut message = LogMessage::new();
+                message.push_str(data);
+                let _ = LOG_CHANNEL.try_send(message);
             }
         }
     }
@@ -509,6 +572,7 @@ async fn usb_device_task(mut usb: UsbDevice<'static, Driver<'static, USB>>) {
 /// * `level` - Maximum log level to transmit (e.g., `LevelFilter::Info`)
 /// * `usb_peripheral` - RP2040 USB peripheral instance
 /// * `command_sender` - Optional channel sender for receiving line-buffered commands from the host (`None` disables forwarding)
+/// * `data_receiver`  - Optional channel receiver for sending commands to the host (`None` disables forwarding)
 ///
 /// # Panics
 ///
@@ -531,14 +595,74 @@ async fn usb_device_task(mut usb: UsbDevice<'static, Driver<'static, USB>>) {
 ///     LevelFilter::Info,
 ///     usb_peripheral,
 ///     Some(COMMAND_CHANNEL.sender()),
+///     None,
 /// );
 /// # }
 /// ```
+
+#[cfg(feature = "log")]
 pub fn start(
     spawner: Spawner,
     level: LevelFilter,
     usb_peripheral: Peri<'static, USB>,
     command_sender: Option<Sender<'static, CriticalSectionRawMutex, [u8; USB_READ_BUFFER_SIZE], 4>>,
+    data_receiver: Option<Receiver<'static, CriticalSectionRawMutex, [u8; USB_READ_BUFFER_SIZE], 4>>,
+) {
+    start_impl(spawner, level, usb_peripheral, command_sender, data_receiver)
+}
+
+/// Initialize USB command channel, spawning all necessary tasks, but without logging enabled.
+///
+/// This function sets up the USB CDC ACM interface for bidirectional communication
+/// and spawns three tasks to handle the USB device, transmission, and reception.
+/// It also initializes the global logger to forward log messages over USB.
+///
+/// # Arguments
+///
+/// * `spawner` - Embassy task spawner for creating the USB tasks
+/// * `usb_peripheral` - RP2040 USB peripheral instance
+/// * `command_sender` - Optional channel sender for receiving line-buffered commands from the host (`None` disables forwarding)
+/// * `data_receiver`  - Optional channel receiver for sending commands to the host (`None` disables forwarding)
+///
+/// # Panics
+///
+/// Panics if called more than once, as it sets the global logger.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use embassy_executor::Spawner;
+/// use embassy_sync::channel::Channel;
+/// use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+///
+/// static COMMAND_CHANNEL: Channel<CriticalSectionRawMutex, [u8; rp_usb_console::USB_READ_BUFFER_SIZE], 4> = Channel::new();
+///
+/// # async fn example(spawner: Spawner, usb_peripheral: embassy_rp::peripherals::USB) {
+/// rp_usb_console::start(
+///     spawner,
+///     usb_peripheral,
+///     Some(COMMAND_CHANNEL.sender()),
+///     None,
+/// );
+/// # }
+/// ```
+
+#[cfg(not(feature = "log"))]
+pub fn start(
+    spawner: Spawner,
+    usb_peripheral: Peri<'static, USB>,
+    command_sender: Option<Sender<'static, CriticalSectionRawMutex, [u8; USB_READ_BUFFER_SIZE], 4>>,
+    data_receiver: Option<Receiver<'static, CriticalSectionRawMutex, [u8; USB_READ_BUFFER_SIZE], 4>>,
+) {
+    start_impl(spawner, log::LevelFilter::Off, usb_peripheral, command_sender, data_receiver)
+}
+
+fn start_impl(
+    spawner: Spawner,
+    level: LevelFilter,
+    usb_peripheral: Peri<'static, USB>,
+    command_sender: Option<Sender<'static, CriticalSectionRawMutex, [u8; USB_READ_BUFFER_SIZE], 4>>,
+    data_receiver: Option<Receiver<'static, CriticalSectionRawMutex, [u8; USB_READ_BUFFER_SIZE], 4>>,
 ) {
     // Initialize the logger (use racy variants on targets without atomic ptr support, e.g. thumbv6m/RP2040)
     unsafe {
@@ -581,4 +705,5 @@ pub fn start(
     spawner.spawn(usb_device_task(usb)).unwrap();
     spawner.spawn(usb_tx_task(sender)).unwrap();
     spawner.spawn(usb_rx_task(receiver, command_sender)).unwrap();
+    spawner.spawn(data_receiver_task(data_receiver)).unwrap();
 }

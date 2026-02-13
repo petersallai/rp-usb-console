@@ -8,17 +8,19 @@ When developing for the Raspberry Pi Pico, you typically have two choices: debug
 
 ## Command list
 
-- "/LT": set global loglevel to TRACE
-- "/LD": set global loglevel to DEBUG
-- "/LI": set global loglevel to INFO
-- "/LW": set global loglevel to WARN
-- "/LE": set global loglevel to ERROR
-- "/LO": set global loglevel to OFF
-- "/LM <module_filter>,<Loglevel>": Set specific loglevel for modules containing module filter
-- "BS": Reboot RP2040 to Boot Select (to deploy applications)
-- "RS": Reset RP2040
+- `/LT`: set global loglevel to TRACE
+- `/LD`: set global loglevel to DEBUG
+- `/LI`: set global loglevel to INFO
+- `/LW`: set global loglevel to WARN
+- `/LE`: set global loglevel to ERROR
+- `/LO`: set global loglevel to OFF
+- `/LM <module_filter>,<Loglevel>`: Set specific loglevel for modules containing module filter
+- `/BS`: Reboot Pico to Boot Select (to deploy applications)
+- `/RS`: Reset Pico
+- `/E0`: Turns `echo` off
+- `/E1`: Turns `echo` on (chars sent are echoed back for display)
 
-All command must be ended with /r or /n or both.
+All command must be ended with `/r` or `/n` or both.
 
 ## Features
 
@@ -39,12 +41,9 @@ All command must be ended with /r or /n or both.
 
 ## Usage
 
-Add this to your `Cargo.toml`:
+Run `cargo add rp-usb-console --features=rp2040` to add this crate to your Pico project.
 
-```toml
-[dependencies]
-rp-usb-console = "0.1.0"
-```
+Run `cargo add rp-usb-console --features=rp235xa` to add this crate to your Pico **2** project.
 
 Basic usage example:
 
@@ -69,6 +68,7 @@ async fn main(spawner: Spawner) {
         log::LevelFilter::Info,
         p.USB,
         Some(COMMAND_CHANNEL.sender()),
+        None,
     );
     
     // Now you can use standard log macros
@@ -82,9 +82,89 @@ async fn main(spawner: Spawner) {
 async fn command_handler() {
     let receiver = COMMAND_CHANNEL.receiver();
     loop {
-    let command = receiver.receive().await;
-    // Process received command data (terminated by CR/LF; trailing zeros may be present)
-    info!("Received command: {:?}", command);
+        let command = receiver.receive().await;
+        // Process received command data (terminated by CR/LF; trailing zeros may be present)
+        info!("Received command: {:?}", command);
+    }
+}
+```
+
+The crate supports communication both ways, so if you disable `log` feature (e.g. use `defmt` crate to log via debug probe) and enable `echo` feature, you can use the crate as interactive console to your Pico:
+
+```rust
+use embassy_executor::Spawner;
+use embassy_rp as hal;
+use embassy_rp::gpio::{Level, Output};
+
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::channel::Channel;
+
+use rp_usb_console::{LogMessage, USB_READ_BUFFER_SIZE};
+
+// channel for receiving commands from USB
+static COMMAND_CHANNEL: Channel<CriticalSectionRawMutex, [u8; USB_READ_BUFFER_SIZE], 4> = Channel::new();
+// channel for sending data to USB
+static DATA_CHANNEL: Channel<CriticalSectionRawMutex, [u8; USB_READ_BUFFER_SIZE], 4> = Channel::new();
+// channel for setting LED state
+static LED_CH: Channel<CriticalSectionRawMutex, u8, 4> = Channel::new();
+
+#[embassy_executor::main]
+async fn main(spawner: Spawner) {
+    let p = embassy_rp::init(Default::default());
+
+    // Initialize USB console
+    rp_usb_console::start(spawner, p.USB, Some(COMMAND_CHANNEL.sender()), Some(DATA_CHANNEL.receiver()));
+
+    // Handle incoming commands in a separate task
+    spawner.spawn(command_handler()).unwrap();
+
+    info!("--- Applicaton started ---");
+
+    let receiver = LED_CH.receiver();
+    let mut led = Output::new(p.PIN_25, Level::Low);
+    loop {
+        let command = receiver.receive().await;
+        if command == 0 {
+            led.set_low();
+        } else {
+            led.set_high();
+        }
+        info!("LED set to {}", command);
+    }
+}
+
+#[embassy_executor::task]
+async fn command_handler() {
+    let receiver = COMMAND_CHANNEL.receiver();
+    let led = LED_CH.sender();
+
+    loop {
+        let command = receiver.receive().await;
+        if let Ok(command_str) = core::str::from_utf8(&command[0..4]) {
+            match command_str {
+                "help" => {
+                    let string = "set LED state\r\n    led0    power off LED\r\n    led1    power on LED\r\n";
+                    let mut message = LogMessage::new();
+                    message.push_str(string);
+                    let _ = DATA_CHANNEL.try_send(message.buf);
+                }
+                "led0" => {
+                    let _ = led.try_send(0).unwrap();
+                }
+                "led1" => {
+                    let _ = led.try_send(1).unwrap();
+                }
+                _ => {
+                    let mut message = LogMessage::new();
+                    message.push_str("Error: unknown command\r\n");
+                    let _ = DATA_CHANNEL.try_send(message.buf);
+                    info!("Received unknown command: {:?}", command_str);
+                }
+            }
+        }
+        let mut message = LogMessage::new();
+        message.push_str("> ");
+        let _ = DATA_CHANNEL.try_send(message.buf);
     }
 }
 ```
@@ -119,6 +199,8 @@ Fixed-size message buffer with USB packet fragmentation support.
 - **Truncation**: Messages exceeding capacity are truncated with ellipsis
 - **Fragmentation**: Automatically split into 64-byte USB packets
 
+This crate installs with `log` feature enabled by default. In case you don't want the log output on your console (because you use `defmt` or other ways of logging) set `default-features = false` in your `Config.toml` and use `start()` without the `level` parameter.
+
 ## Implementation Details
 
 ### Memory Management
@@ -152,10 +234,11 @@ Fixed-size message buffer with USB packet fragmentation support.
 - Configurable line ending options (CRLF/LF)
 - Optional timestamp formatting
 - Extended formatting features
+- Support cursor movements and char deletion (delete, backspace)
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE.md) file for details.
 
 ## Contributing
 
