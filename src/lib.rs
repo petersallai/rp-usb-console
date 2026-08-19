@@ -140,7 +140,10 @@ pub struct LogMessage {
 impl LogMessage {
     /// Create an empty message buffer.
     pub fn new() -> Self {
-        Self { len: 0, buf: [0; 255] }
+        Self {
+            len: 0,
+            buf: [0; 255],
+        }
     }
 
     /// Append a string (UTF-8 bytes) truncating if capacity exceeded.
@@ -263,7 +266,9 @@ impl Log for USBLogger {
                 Some(settings) => {
                     let module_name = settings.module_name();
                     let target_filter = match record.module_path() {
-                        Some(path) if !module_name.is_empty() && path.contains(module_name) => settings.module_level,
+                        Some(path) if !module_name.is_empty() && path.contains(module_name) => {
+                            settings.module_level
+                        }
                         _ => settings.other_level,
                     };
                     level_allowed(target_filter, record.level())
@@ -276,11 +281,23 @@ impl Log for USBLogger {
             }
 
             let mut message = LogMessage::new();
-            let path = if let Some(p) = record.module_path() { p } else { "" };
+            let path = if let Some(p) = record.module_path() {
+                p
+            } else {
+                ""
+            };
             if message.len + path.len() + 10 >= 255 {
                 return; // Avoid exceeding buffer capacity
             }
-            if write!(&mut message, "[{}] {}: {}\r\n", record.level(), path, record.args()).is_ok() {
+            if write!(
+                &mut message,
+                "[{}] {}: {}\r\n",
+                record.level(),
+                path,
+                record.args()
+            )
+            .is_ok()
+            {
                 // Non-blocking send. If the channel is full, the message is dropped.
                 let _ = LOG_CHANNEL.try_send(message);
             }
@@ -378,7 +395,8 @@ async fn usb_rx_task(
                             "/LM" => {
                                 processed = true;
                                 if let Ok(param_string) = core::str::from_utf8(&buf[4..]) {
-                                    let param_string = param_string.trim_matches(char::from(0)).trim();
+                                    let param_string =
+                                        param_string.trim_matches(char::from(0)).trim();
 
                                     let mut parts = param_string.splitn(2, ',');
                                     match (parts.next(), parts.next()) {
@@ -394,10 +412,15 @@ async fn usb_rx_task(
                                             }
 
                                             if module_level_str == "-" {
-                                                log::info!("Module logging override cleared for '{}'", module_filter);
+                                                log::info!(
+                                                    "Module logging override cleared for '{}'",
+                                                    module_filter
+                                                );
                                                 if let Some(settings) = get_log_settings() {
                                                     unsafe {
-                                                        log::set_max_level_racy(settings.other_level);
+                                                        log::set_max_level_racy(
+                                                            settings.other_level,
+                                                        );
                                                     }
                                                 }
                                                 set_log_settings(None);
@@ -406,7 +429,9 @@ async fn usb_rx_task(
                                                 continue;
                                             }
 
-                                            let Some(module_level) = parse_level_filter(module_level_str) else {
+                                            let Some(module_level) =
+                                                parse_level_filter(module_level_str)
+                                            else {
                                                 log::error!("Invalid /LM module level '{}'. Use one of T,D,I,W,E,O", module_level_str);
                                                 buf_position = 0; // Reset buffer for next command
                                                 buf = [0u8; USB_READ_BUFFER_SIZE];
@@ -418,7 +443,11 @@ async fn usb_rx_task(
                                                 log::set_max_level_racy(module_level);
                                             }
 
-                                            let settings = LogModuleSettings::new(module_filter, module_level, other_level);
+                                            let settings = LogModuleSettings::new(
+                                                module_filter,
+                                                module_level,
+                                                other_level,
+                                            );
                                             set_log_settings(Some(settings));
 
                                             log::info!("Module logging override: module='{}' module_level={:?}", module_filter, module_level);
@@ -580,5 +609,7 @@ pub fn start(
     // Spawn all the necessary tasks.
     spawner.spawn(usb_device_task(usb)).unwrap();
     spawner.spawn(usb_tx_task(sender)).unwrap();
-    spawner.spawn(usb_rx_task(receiver, command_sender)).unwrap();
+    spawner
+        .spawn(usb_rx_task(receiver, command_sender))
+        .unwrap();
 }
