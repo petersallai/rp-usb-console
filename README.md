@@ -8,17 +8,17 @@ When developing for the Raspberry Pi Pico, you typically have two choices: debug
 
 ## Command list
 
-- "/LT": set global loglevel to TRACE
-- "/LD": set global loglevel to DEBUG
-- "/LI": set global loglevel to INFO
-- "/LW": set global loglevel to WARN
-- "/LE": set global loglevel to ERROR
-- "/LO": set global loglevel to OFF
-- "/LM <module_filter>,<Loglevel>": Set specific loglevel for modules containing module filter
-- "BS": Reboot RP2040 to Boot Select (to deploy applications)
-- "RS": Reset RP2040
+- `/LT`: set global loglevel to TRACE
+- `/LD`: set global loglevel to DEBUG
+- `/LI`: set global loglevel to INFO
+- `/LW`: set global loglevel to WARN
+- `/LE`: set global loglevel to ERROR
+- `/LO`: set global loglevel to OFF
+- `/LM <module_filter>,<Loglevel>`: Set specific loglevel for modules containing module filter
+- `/BS`: Reboot Pico to Boot Select (to deploy applications)
+- `/RS`: Reset Pico
 
-All command must be ended with /r or /n or both.
+All command must be ended with `/r` or `/n` or both.
 
 ## Features
 
@@ -39,12 +39,9 @@ All command must be ended with /r or /n or both.
 
 ## Usage
 
-Add this to your `Cargo.toml`:
+Run `cargo add rp-usb-console --features=rp2040` to add this crate to your Pico project.
 
-```toml
-[dependencies]
-rp-usb-console = "0.1.0"
-```
+Run `cargo add rp-usb-console --features=rp235xa` to add this crate to your Pico **2** project.
 
 Basic usage example:
 
